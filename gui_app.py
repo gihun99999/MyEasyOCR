@@ -70,8 +70,13 @@ class OCRWorker(QThread):
             self.progress.emit("OCR 처리 중...")
             logger.info(f"이미지 OCR 처리: {self.image_path}")
             
-            ocr_result = self.ocr_engine.extract_text(self.image_path)
-            raw_text = ocr_result['full_text']
+            # 별도 스레드에서 OCR 실행 (메인 스레드 차단 방지)
+            try:
+                ocr_result = self.ocr_engine.extract_text(self.image_path)
+                raw_text = ocr_result['full_text']
+            except Exception as ocr_error:
+                logger.error(f"OCR 처리 오류: {str(ocr_error)}")
+                raise
             
             result = {
                 'filename': Path(self.image_path).name,
@@ -89,17 +94,26 @@ class OCRWorker(QThread):
                 self.progress.emit("LLM 보정 중...")
                 logger.info("LLM 보정 처리")
                 
-                correction_result = self.llm_corrector.correct_text(
-                    raw_text, 
-                    CORRECTION_PROMPT_TEMPLATE
-                )
-                
-                result['correction'] = {
-                    'corrected_text': correction_result['corrected_text'],
-                    'success': correction_result['success'],
-                    'model': correction_result.get('model', 'unknown'),
-                    'error': correction_result.get('error')
-                }
+                try:
+                    correction_result = self.llm_corrector.correct_text(
+                        raw_text, 
+                        CORRECTION_PROMPT_TEMPLATE
+                    )
+                    
+                    result['correction'] = {
+                        'corrected_text': correction_result['corrected_text'],
+                        'success': correction_result['success'],
+                        'model': correction_result.get('model', 'unknown'),
+                        'error': correction_result.get('error')
+                    }
+                except Exception as llm_error:
+                    logger.error(f"LLM 보정 오류: {str(llm_error)}")
+                    result['correction'] = {
+                        'corrected_text': raw_text,
+                        'success': False,
+                        'model': OLLAMA_MODEL,
+                        'error': str(llm_error)
+                    }
             
             self.progress.emit("완료")
             self.finished.emit(result)
@@ -124,13 +138,15 @@ class OCRGuiApp(QMainWindow):
         self.current_result = None
         self.worker = None
         
-        # UI 구성
-        self.setup_ui()
-        self.init_engines()
-        
-        # 상태바 설정
+        # 상태바 설정 (UI보다 먼저)
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
+        
+        # UI 구성
+        self.setup_ui()
+        
+        # 엔진 초기화
+        self.init_engines()
         self.update_status(ProcessStatus.IDLE)
     
     def setup_ui(self):

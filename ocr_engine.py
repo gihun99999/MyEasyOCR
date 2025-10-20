@@ -1,139 +1,183 @@
 """
-EasyOCR을 사용한 OCR 엔진
+EasyOCR 기반 OCR 엔진
+이미지에서 텍스트를 추출하는 기능 제공
 """
 
-import easyocr
 import logging
-from pathlib import Path
 from typing import List, Dict, Any
-from PIL import Image
+import easyocr
+from pathlib import Path
+import numpy as np
 import cv2
 
 logger = logging.getLogger(__name__)
 
 
 class OCREngine:
-    """EasyOCR 기반 OCR 엔진"""
+    """
+    EasyOCR 기반 텍스트 추출 엔진
+    """
     
-    def __init__(self, languages: List[str], gpu: bool = False):
+    def __init__(self, languages: List[str] = None, gpu: bool = True):
         """
         OCR 엔진 초기화
         
         Args:
-            languages: OCR 인식 언어 목록 (예: ['ko', 'en'])
+            languages: OCR 언어 리스트 (기본값: ['ko', 'en'])
             gpu: GPU 사용 여부
         """
-        logger.info(f"OCR 엔진 초기화 중... 언어: {languages}, GPU: {gpu}")
-        self.reader = easyocr.Reader(languages, gpu=gpu)
-        logger.info("OCR 엔진 초기화 완료")
+        if languages is None:
+            languages = ['ko', 'en']
+        
+        self.languages = languages
+        self.gpu = gpu
+        
+        logger.info(f"OCR 엔진 초기화 중... (언어: {languages}, GPU: {gpu})")
+        
+        try:
+            self.reader = easyocr.Reader(
+                lang_list=languages,
+                gpu=gpu,
+                verbose=False
+            )
+            logger.info("OCR 엔진 초기화 완료")
+        except Exception as e:
+            logger.error(f"OCR 엔진 초기화 실패: {str(e)}")
+            raise
     
-    def extract_text(self, image_path: str, confidence_threshold: float = 0.5) -> Dict[str, Any]:
+    def extract_text(self, image_path: str) -> Dict[str, Any]:
         """
         이미지에서 텍스트 추출
         
         Args:
             image_path: 이미지 파일 경로
-            confidence_threshold: 신뢰도 임계값 (0~1)
         
         Returns:
+            OCR 결과 딕셔너리
             {
-                'full_text': str,  # 전체 텍스트
-                'detailed_results': List,  # 상세 결과
-                'confidence_avg': float  # 평균 신뢰도
+                'full_text': 전체 텍스트,
+                'confidence_avg': 평균 신뢰도,
+                'num_words': 단어 수,
+                'details': 상세 결과 리스트
             }
         """
         try:
-            logger.info(f"이미지 OCR 처리: {image_path}")
-            
-            # 이미지 읽기
+            # 파일 존재 확인
             if not Path(image_path).exists():
                 raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
             
-            # EasyOCR 처리
-            results = self.reader.readtext(image_path, detail=1)
+            logger.info(f"이미지 OCR 처리: {image_path}")
             
-            # 신뢰도 필터링
-            filtered_results = [
-                result for result in results 
-                if result[2] >= confidence_threshold
-            ]
+            # 한글 경로 지원을 위해 numpy를 사용하여 이미지 읽기
+            # OpenCV는 한글 경로를 지원하지 않으므로 우회 방법 사용
+            with open(image_path, 'rb') as f:
+                image_data = np.frombuffer(f.read(), np.uint8)
+                image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
             
-            # 텍스트 추출 및 정렬
-            full_text = self._format_text(filtered_results)
-            confidence_values = [result[2] for result in filtered_results]
-            confidence_avg = sum(confidence_values) / len(confidence_values) if confidence_values else 0
+            if image is None:
+                raise ValueError(f"이미지를 읽을 수 없습니다: {image_path}")
             
-            logger.info(f"OCR 완료 - 신뢰도: {confidence_avg:.2%}")
+            # OCR 실행 (numpy array 전달)
+            results = self.reader.readtext(image)
             
-            return {
+            if not results:
+                logger.warning("텍스트를 추출할 수 없습니다")
+                return {
+                    'full_text': '',
+                    'confidence_avg': 0.0,
+                    'num_words': 0,
+                    'details': []
+                }
+            
+            # 결과 처리
+            texts = []
+            confidences = []
+            details = []
+            
+            for bbox, text, confidence in results:
+                texts.append(text)
+                confidences.append(confidence)
+                details.append({
+                    'bbox': bbox,
+                    'text': text,
+                    'confidence': confidence
+                })
+            
+            # 전체 텍스트 결합
+            full_text = ' '.join(texts)
+            
+            # 평균 신뢰도 계산
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+            
+            result = {
                 'full_text': full_text,
-                'detailed_results': filtered_results,
-                'confidence_avg': confidence_avg,
-                'num_words': len(filtered_results)
+                'confidence_avg': avg_confidence,
+                'num_words': len(texts),
+                'details': details
             }
+            
+            logger.info(f"OCR 완료 - 단어 수: {len(texts)}, 평균 신뢰도: {avg_confidence:.2%}")
+            
+            return result
         
         except Exception as e:
             logger.error(f"OCR 처리 중 오류: {str(e)}")
             raise
     
-    def _format_text(self, results: List) -> str:
+    def extract_text_batch(self, image_paths: List[str]) -> List[Dict[str, Any]]:
         """
-        OCR 결과를 텍스트로 포맷팅
+        여러 이미지에서 텍스트 일괄 추출
         
         Args:
-            results: EasyOCR의 상세 결과
+            image_paths: 이미지 파일 경로 리스트
         
         Returns:
-            포맷된 텍스트
+            OCR 결과 리스트
         """
-        lines = []
-        current_y = 0
-        current_line_texts = []
+        results = []
         
-        # Y 좌표로 정렬 (위에서 아래로)
-        sorted_results = sorted(results, key=lambda x: x[0][0][1])
-        
-        for result in sorted_results:
-            text = result[1]
-            bbox = result[0]
-            
-            # Y 좌표 추출 (위쪽)
-            y_coord = bbox[0][1]
-            
-            # 새로운 줄 감지 (Y 차이 > 10)
-            if current_line_texts and abs(y_coord - current_y) > 10:
-                lines.append(' '.join(current_line_texts))
-                current_line_texts = []
-            
-            current_line_texts.append(text)
-            current_y = y_coord
-        
-        # 마지막 줄 추가
-        if current_line_texts:
-            lines.append(' '.join(current_line_texts))
-        
-        return '\n'.join(lines)
-    
-    def extract_from_multiple_images(self, image_dir: str) -> Dict[str, Any]:
-        """
-        디렉토리의 모든 이미지에서 텍스트 추출
-        
-        Args:
-            image_dir: 이미지 디렉토리 경로
-        
-        Returns:
-            {filename: 추출 결과}
-        """
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'}
-        image_dir = Path(image_dir)
-        
-        results = {}
-        for image_file in image_dir.iterdir():
-            if image_file.suffix.lower() in image_extensions:
-                try:
-                    results[image_file.name] = self.extract_text(str(image_file))
-                except Exception as e:
-                    logger.error(f"파일 처리 실패 - {image_file.name}: {str(e)}")
-                    results[image_file.name] = {'error': str(e)}
+        for image_path in image_paths:
+            try:
+                result = self.extract_text(image_path)
+                results.append({
+                    'filename': Path(image_path).name,
+                    'success': True,
+                    'result': result
+                })
+            except Exception as e:
+                logger.error(f"이미지 처리 실패 ({image_path}): {str(e)}")
+                results.append({
+                    'filename': Path(image_path).name,
+                    'success': False,
+                    'error': str(e)
+                })
         
         return results
+
+
+if __name__ == "__main__":
+    # 테스트 코드
+    import sys
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    if len(sys.argv) < 2:
+        print("사용법: python ocr_engine.py <이미지_파일_경로>")
+        sys.exit(1)
+    
+    # OCR 엔진 생성
+    engine = OCREngine(['ko', 'en'], gpu=False)
+    
+    # 텍스트 추출
+    image_path = sys.argv[1]
+    result = engine.extract_text(image_path)
+    
+    print("\n" + "="*50)
+    print("OCR 결과:")
+    print("="*50)
+    print(f"추출된 텍스트: {result['full_text']}")
+    print(f"평균 신뢰도: {result['confidence_avg']:.2%}")
+    print(f"단어 수: {result['num_words']}")
