@@ -30,6 +30,7 @@ wheels/
 *.swo
 *~
 .DS_Store
+*.code-workspace
 
 # Project specific
 ocr_program.log
@@ -38,6 +39,7 @@ ocr_program.log
 *.weights
 .easyocr/
 ollama_models/
+generate_test_image.py
 
 # Images and outputs
 images/*.png
