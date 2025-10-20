@@ -1,0 +1,7 @@
+easyocr==1.7.0
+pillow==10.1.0
+requests==2.31.0
+python-dotenv==1.0.0
+opencv-python==4.8.1.78
+PyQt6==6.6.1
+PyQt6-sip==13.6.0
